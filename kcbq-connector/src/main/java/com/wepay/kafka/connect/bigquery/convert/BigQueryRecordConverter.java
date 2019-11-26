@@ -72,20 +72,25 @@ public class BigQueryRecordConverter implements RecordConverter<Map<String, Obje
    * @return The result BigQuery row content.
    */
   public Map<String, Object> convertRecord(SinkRecord kafkaConnectRecord) {
-    Schema kafkaConnectSchema = kafkaConnectRecord.valueSchema();
-    Object kafkaConnectValue = kafkaConnectRecord.value();
-    if (kafkaConnectSchema == null) {
-      if (kafkaConnectValue instanceof Map) {
-        return (Map<String, Object>) convertSchemalessRecord(kafkaConnectValue);
+    Schema valueSchema = kafkaConnectRecord.valueSchema();
+    Object value = kafkaConnectRecord.value();
+    Schema keySchema = kafkaConnectRecord.keySchema();
+    Object key = kafkaConnectRecord.key();
+    if (valueSchema == null) {
+      if (value instanceof Map) {
+        return (Map<String, Object>) convertSchemalessRecord(value);
       }
       throw new ConversionConnectException("Only Map objects supported in absence of schema for " +
               "record conversion to BigQuery format.");
     }
-    if (kafkaConnectSchema.type() != Schema.Type.STRUCT) {
+    if (valueSchema.type() != Schema.Type.STRUCT || keySchema.type() != Schema.Type.STRUCT) {
       throw new
           ConversionConnectException("Top-level Kafka Connect schema must be of type 'struct'");
     }
-    return convertStruct(kafkaConnectRecord.value(), kafkaConnectSchema);
+    Map<String, Object> valueMap = convertStruct(value, valueSchema);
+    Map<String, Object> keyMap = convertStruct(key, keySchema);
+    valueMap.putAll(keyMap);
+    return valueMap;
   }
 
   private Object convertSchemalessRecord(Object value) {

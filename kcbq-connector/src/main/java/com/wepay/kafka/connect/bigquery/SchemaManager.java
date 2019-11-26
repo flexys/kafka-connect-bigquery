@@ -45,8 +45,9 @@ public class SchemaManager {
    * @param topic The Kafka topic used to determine the schema.
    */
   public void createTable(TableId table, String topic) {
-    Schema kafkaConnectSchema = schemaRetriever.retrieveSchema(table, topic);
-    bigQuery.create(constructTableInfo(table, kafkaConnectSchema));
+    Schema keySchema = schemaRetriever.retrieveSchema(table, topic, true);
+    Schema valueSchema = schemaRetriever.retrieveSchema(table, topic, false);
+    bigQuery.create(constructTableInfo(table, keySchema, valueSchema));
   }
 
   /**
@@ -55,25 +56,26 @@ public class SchemaManager {
    * @param topic The Kafka topic used to determine the schema.
    */
   public void updateSchema(TableId table, String topic) {
-    Schema kafkaConnectSchema = schemaRetriever.retrieveSchema(table, topic);
-    TableInfo tableInfo = constructTableInfo(table, kafkaConnectSchema);
+    Schema keySchema = schemaRetriever.retrieveSchema(table, topic, true);
+    Schema valueSchema = schemaRetriever.retrieveSchema(table, topic, false);
+    TableInfo tableInfo = constructTableInfo(table, keySchema, valueSchema);
     logger.info("Attempting to update table `{}` with schema {}",
         table, tableInfo.getDefinition().getSchema());
     bigQuery.update(tableInfo);
   }
 
   // package private for testing.
-  TableInfo constructTableInfo(TableId table, Schema kafkaConnectSchema) {
+  TableInfo constructTableInfo(TableId table, Schema keySchema, Schema valueSchema) {
     com.google.cloud.bigquery.Schema bigQuerySchema =
-        schemaConverter.convertSchema(kafkaConnectSchema);
+        schemaConverter.convertSchema(keySchema, valueSchema);
     StandardTableDefinition tableDefinition = StandardTableDefinition.newBuilder()
         .setSchema(bigQuerySchema)
         .setTimePartitioning(TimePartitioning.of(TimePartitioning.Type.DAY))
         .build();
     TableInfo.Builder tableInfoBuilder =
         TableInfo.newBuilder(table, tableDefinition);
-    if (kafkaConnectSchema.doc() != null) {
-      tableInfoBuilder.setDescription(kafkaConnectSchema.doc());
+    if (valueSchema.doc() != null) {
+      tableInfoBuilder.setDescription(valueSchema.doc());
     }
     return tableInfoBuilder.build();
   }

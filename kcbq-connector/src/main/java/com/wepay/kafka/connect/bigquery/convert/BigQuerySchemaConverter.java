@@ -90,27 +90,36 @@ public class BigQuerySchemaConverter implements SchemaConverter<com.google.cloud
    * Convert a {@link Schema Kafka Connect Schema} into a
    * {@link com.google.cloud.bigquery.Schema BigQuery schema}.
    *
-   * @param kafkaConnectSchema The schema to convert. Must be of type Struct, in order to translate
-   *                           into a row format that requires each field to consist of both a name
-   *                           and a value.
+   * @param keySchema The kafka connect key schema to convert.
+   *                  Must be of type Struct, in order to translate into a row format
+   *                  that requires each field to consist of both a name and a value.
+   * @param valueSchema The kafka connect value schema to convert.
+   *                    Must be of type Struct, in order to translate into a row format
+   *                    that requires each field to consist of both a name and a value.
    * @return The resulting schema, which can then be used to create a new table or update an
    *         existing one.
    */
-  public com.google.cloud.bigquery.Schema convertSchema(Schema kafkaConnectSchema) {
-    if (kafkaConnectSchema.type() != Schema.Type.STRUCT) {
+  public com.google.cloud.bigquery.Schema convertSchema(Schema keySchema, Schema valueSchema) {
+    if (keySchema.type() != Schema.Type.STRUCT || valueSchema.type() != Schema.Type.STRUCT) {
       throw new
           ConversionConnectException("Top-level Kafka Connect schema must be of type 'struct'");
     }
 
     List<com.google.cloud.bigquery.Field> fields = new LinkedList<>();
-
-    for (Field kafkaConnectField : kafkaConnectSchema.fields()) {
-      com.google.cloud.bigquery.Field bigQuerySchemaField =
-          convertField(kafkaConnectField.schema(), kafkaConnectField.name()).build();
-      fields.add(bigQuerySchemaField);
-    }
+    fields.addAll(getBQFieldsFromKafkaSchema(keySchema));
+    fields.addAll(getBQFieldsFromKafkaSchema(valueSchema));
 
     return com.google.cloud.bigquery.Schema.of(fields);
+  }
+
+  private List<com.google.cloud.bigquery.Field> getBQFieldsFromKafkaSchema(Schema kafkaConnectSchema) {
+    List<com.google.cloud.bigquery.Field> fields = new LinkedList<>();
+    for (Field kafkaConnectField : kafkaConnectSchema.fields()) {
+      com.google.cloud.bigquery.Field bigQuerySchemaField =
+              convertField(kafkaConnectField.schema(), kafkaConnectField.name()).build();
+      fields.add(bigQuerySchemaField);
+    }
+    return fields;
   }
 
   private com.google.cloud.bigquery.Field.Builder convertField(Schema kafkaConnectSchema,

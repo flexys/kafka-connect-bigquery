@@ -26,8 +26,9 @@ import org.apache.kafka.connect.data.Schema;
  */
 public interface SchemaConverter<S> {
   /**
-   * @param schema The schema to convert.
+   * @param keySchema Kafka Connector Key Schema.
+   * @param valueSchema Kafka Connector Value Schema.
    * @return The converted schema.
    */
-  S convertSchema(Schema schema);
+  S convertSchema(Schema keySchema, Schema valueSchema);
 }
