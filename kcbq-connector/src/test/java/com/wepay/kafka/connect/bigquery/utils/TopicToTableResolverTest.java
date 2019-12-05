@@ -241,6 +241,46 @@ public class TopicToTableResolverTest {
     assertEquals(expectedTopicsToTables, topicsToTables);
   }
 
+  @Test
+  public void testUpdateTopicToTableWithMultiSchemaTopicsEnabledAndCustomDatasets() {
+    Map<String, String> configProperties = propertiesFactory.getProperties();
+    configProperties.put(BigQuerySinkConfig.SANITIZE_TOPICS_CONFIG, "true");
+    configProperties.put(
+        BigQuerySinkConfig.DATASETS_CONFIG,
+        ".*events\\.order\\..*=order_events,.*events\\.payment\\..*=payment_events"
+    );
+    configProperties.put(
+        BigQuerySinkConfig.TOPICS_TO_TABLES_CONFIG,
+        "^.*$=event"
+    );
+    configProperties.put(
+        BigQuerySinkConfig.RECORDS_TO_TABLE_POSTFIXES_CONFIG,
+        "^.*\\.([^\\.]+)$=$1"
+    );
+    configProperties.put(
+        BigQuerySinkConfig.SUPPORT_MULTI_SCHEMA_TOPICS_CONFIG,
+        "true"
+    );
+
+    TopicAndRecordName orderPlaced = TopicAndRecordName.from("events", "events.order.OrderPlaced");
+    TopicAndRecordName paymentAdded = TopicAndRecordName.from("events", "events.payment.PaymentAdded");
+    TopicAndRecordName orderFulfilled = TopicAndRecordName.from("events", "events.order.OrderFulfilled");
+
+    Map<TopicAndRecordName, TableId> topicsToTables = new HashMap<>();
+    // Create shallow copy of map, deep copy not needed.
+    Map<TopicAndRecordName, TableId> expectedTopicsToTables = new HashMap<>(topicsToTables);
+    expectedTopicsToTables.put(orderPlaced, TableId.of("order_events", "event_OrderPlaced"));
+    expectedTopicsToTables.put(paymentAdded, TableId.of("payment_events", "event_PaymentAdded"));
+    expectedTopicsToTables.put(orderFulfilled, TableId.of("order_events", "event_OrderFulfilled"));
+
+    BigQuerySinkConfig testConfig = new BigQuerySinkConfig(configProperties);
+    TopicToTableResolver.updateTopicToTable(testConfig, orderPlaced, topicsToTables);
+    TopicToTableResolver.updateTopicToTable(testConfig, paymentAdded, topicsToTables);
+    TopicToTableResolver.updateTopicToTable(testConfig, orderFulfilled, topicsToTables);
+
+    assertEquals(expectedTopicsToTables, topicsToTables);
+  }
+
   @Test(expected = ConfigException.class)
   public void testUpdateTopicToTableWithInvalidRegex() {
     Map<String, String> configProperties = propertiesFactory.getProperties();
