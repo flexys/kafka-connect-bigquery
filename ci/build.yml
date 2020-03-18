@@ -7,7 +7,7 @@ image_resource:
   type: docker-image
   source:
     repository: gradle
-    tag: 5.5-jre8
+    tag: 5.5-jdk8
 
 inputs:
   - name: kafka-connect-bigquery
