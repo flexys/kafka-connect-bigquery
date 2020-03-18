@@ -28,12 +28,15 @@ import com.google.cloud.bigquery.TableId;
 import com.google.cloud.bigquery.TableInfo;
 
 import com.wepay.kafka.connect.bigquery.api.SchemaRetriever;
+import com.wepay.kafka.connect.bigquery.config.BigQuerySinkConfig;
 import com.wepay.kafka.connect.bigquery.convert.SchemaConverter;
 
 import org.apache.kafka.connect.data.Schema;
 
 import org.junit.Assert;
 import org.junit.Test;
+
+import java.util.Optional;
 
 public class SchemaManagerTest {
 
@@ -44,15 +47,19 @@ public class SchemaManagerTest {
     final String testDoc = "test doc";
     final TableId tableId = TableId.of(testDatasetName, testTableName);
 
+    BigQuerySinkConfig mockConfig = mock(BigQuerySinkConfig.class);
     SchemaRetriever mockSchemaRetriever = mock(SchemaRetriever.class);
     @SuppressWarnings("unchecked")
     SchemaConverter<com.google.cloud.bigquery.Schema> mockSchemaConverter =
         (SchemaConverter<com.google.cloud.bigquery.Schema>) mock(SchemaConverter.class);
+    when(mockConfig.getSchemaConverter()).thenReturn(mockSchemaConverter);
+    when(mockConfig.getSchemaRetriever()).thenReturn(mockSchemaRetriever);
+    when(mockConfig.getKafkaDataFieldName()).thenReturn(Optional.of("kafkaData"));
+    when(mockConfig.getKafkaKeyFieldName()).thenReturn(Optional.of("kafkaKey"));
+
     BigQuery mockBigQuery = mock(BigQuery.class);
 
-    SchemaManager schemaManager = new SchemaManager(mockSchemaRetriever,
-                                                    mockSchemaConverter,
-                                                    mockBigQuery);
+    SchemaManager schemaManager = new SchemaManager(mockBigQuery, mockConfig);
 
     Schema mockKafkaSchema = mock(Schema.class);
     // we would prefer to mock this class, but it is final.
@@ -62,7 +69,7 @@ public class SchemaManagerTest {
     when(mockSchemaConverter.convertSchema(mockKafkaSchema)).thenReturn(fakeBigQuerySchema);
     when(mockKafkaSchema.doc()).thenReturn(testDoc);
 
-    TableInfo tableInfo = schemaManager.constructTableInfo(tableId, mockKafkaSchema);
+    TableInfo tableInfo = schemaManager.constructTableInfo(tableId, mockKafkaSchema, mockKafkaSchema);
 
     Assert.assertEquals("Kafka doc does not match BigQuery table description",
                         testDoc, tableInfo.getDescription());

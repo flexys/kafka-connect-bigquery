@@ -26,14 +26,14 @@ import com.wepay.kafka.connect.bigquery.convert.BigQueryRecordConverter;
 import com.wepay.kafka.connect.bigquery.convert.BigQuerySchemaConverter;
 import com.wepay.kafka.connect.bigquery.convert.RecordConverter;
 import com.wepay.kafka.connect.bigquery.convert.SchemaConverter;
-import com.wepay.kafka.connect.bigquery.convert.kafkadata.KafkaDataBQRecordConverter;
-import com.wepay.kafka.connect.bigquery.convert.kafkadata.KafkaDataBQSchemaConverter;
 
 import org.apache.kafka.common.config.AbstractConfig;
 import org.apache.kafka.common.config.ConfigDef;
 import org.apache.kafka.common.config.ConfigException;
 
 import org.apache.kafka.connect.sink.SinkConnector;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
@@ -46,6 +46,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.Optional;
 
 /**
  * Base class for connector and task configs; contains properties shared between the two of them.
@@ -53,6 +54,7 @@ import java.util.regex.Pattern;
 public class BigQuerySinkConfig extends AbstractConfig {
   private static final ConfigDef config;
   private static final Validator validator = new Validator();
+  private static final Logger logger = LoggerFactory.getLogger(BigQuerySinkConfig.class);
 
   // Values taken from https://github.com/apache/kafka/blob/1.1.1/connect/runtime/src/main/java/org/apache/kafka/connect/runtime/SinkConnectorConfig.java#L33
   public static final String TOPICS_CONFIG =                     SinkConnector.TOPICS_CONFIG;
@@ -106,6 +108,25 @@ public class BigQuerySinkConfig extends AbstractConfig {
       "A list of mappings from topic regexes to table names. Note the regex must include "
       + "capture groups that are referenced in the format string using placeholders (i.e. $1) "
       + "(form of <topic regex>=<format string>)";
+
+  public static final String SUPPORT_MULTI_SCHEMA_TOPICS_CONFIG =                     "supportMultiSchemaTopics";
+  private static final ConfigDef.Type SUPPORT_MULTI_SCHEMA_TOPICS_TYPE =              ConfigDef.Type.BOOLEAN;
+  private static final ConfigDef.Importance SUPPORT_MULTI_SCHEMA_TOPICS_IMPORTANCE =  ConfigDef.Importance.MEDIUM;
+  private static final Object SUPPORT_MULTI_SCHEMA_TOPICS_DEFAULT =                   false;
+  private static final String SUPPORT_MULTI_SCHEMA_TOPICS_DOC =
+      "Whether to support multi schema topics by appending record names to table names;"
+          + " if not enabled table names will be created using topic names only";
+
+  public static final String RECORDS_TO_TABLE_POSTFIXES_CONFIG =                     "recordsToTablePostfixes";
+  private static final ConfigDef.Type RECORDS_TO_TABLE_POSTFIXES_TYPE =              ConfigDef.Type.LIST;
+  private static final ConfigDef.Importance RECORDS_TO_TABLE_POSTFIXES_IMPORTANCE =  ConfigDef.Importance.MEDIUM;
+  private static final Object RECORDS_TO_TABLE_POSTFIXES_DEFAULT =                   null;
+  private static final String RECORDS_TO_TABLE_POSTFIXES_DOC =
+      "A list of mappings from record name regular expressions (regexes) to their aliases, "
+      + "used when '" + SUPPORT_MULTI_SCHEMA_TOPICS_CONFIG +  "' is enabled. "
+      + "BigQuery table name will follow the \"<topic_table_name>_<record_alias>\" template. "
+      + "Note the regex must include capture groups that are referenced in the format string "
+      + "using placeholders (i.e. $1) (form of <topic regex>=<format string>)";
 
   public static final String PROJECT_CONFIG =                     "project";
   private static final ConfigDef.Type PROJECT_TYPE =              ConfigDef.Type.STRING;
@@ -168,14 +189,19 @@ public class BigQuerySinkConfig extends AbstractConfig {
                   + "front of field name. Note: field a.b and a_b will have same value after sanitizing, "
                   + "and might cause key duplication error.";
 
-  public static final String INCLUDE_KAFKA_DATA_CONFIG =                   "includeKafkaData";
-  public static final ConfigDef.Type INCLUDE_KAFKA_DATA_TYPE =             ConfigDef.Type.BOOLEAN;
-  public static final Boolean INCLUDE_KAFKA_DATA_DEFAULT =                 false;
-  public static final ConfigDef.Importance INCLUDE_KAFKA_DATA_IMPORTANCE =
-      ConfigDef.Importance.LOW;
-  public static final String INSTANCE_KAFKA_DATA_DOC =
-      "Whether to include an extra block containing the Kafka source topic, offset, "
-      + "and partition information in the resulting BigQuery rows.";
+  public static final String KAFKA_KEY_FIELD_NAME_CONFIG =        "kafkaKeyFieldName";
+  private static final ConfigDef.Type KAFKA_KEY_FIELD_NAME_TYPE = ConfigDef.Type.STRING;
+  public static final String KAFKA_KEY_FIELD_NAME_DEFAULT =       null;
+  private static final ConfigDef.Importance KAFKA_KEY_FIELD_NAME_IMPORTANCE = ConfigDef.Importance.LOW;
+  private static final String KAFKA_KEY_FIELD_NAME_DOC = "The name of the field of Kafka key. " +
+          "Default to be null, which means Kafka Key Field will not be included.";
+
+  public static final String KAFKA_DATA_FIELD_NAME_CONFIG =        "kafkaDataFieldName";
+  private static final ConfigDef.Type KAFKA_DATA_FIELD_NAME_TYPE = ConfigDef.Type.STRING;
+  public static final String KAFKA_DATA_FIELD_NAME_DEFAULT =       null;
+  private static final ConfigDef.Importance KAFKA_DATA_FIELD_NAME_IMPORTANCE = ConfigDef.Importance.LOW;
+  private static final String KAFKA_DATA_FIELD_NAME_DOC = "The name of the field of Kafka Data. " +
+          "Default to be null, which means Kafka Data Field will not be included. ";
 
   public static final String AVRO_DATA_CACHE_SIZE_CONFIG =                 "avroDataCacheSize";
   private static final ConfigDef.Type AVRO_DATA_CACHE_SIZE_TYPE =          ConfigDef.Type.INT;
@@ -204,6 +230,13 @@ public class BigQuerySinkConfig extends AbstractConfig {
   private static final String ALL_BQ_FIELDS_NULLABLE_DOC =
       "If true, no fields in any produced BigQuery schema will be REQUIRED. All "
       + "non-nullable avro fields will be translated as NULLABLE (or REPEATED, if arrays).";
+
+  public static final String TABLE_CREATE_CONFIG =                     "autoCreateTables";
+  private static final ConfigDef.Type TABLE_CREATE_TYPE =              ConfigDef.Type.BOOLEAN;
+  public static final boolean TABLE_CREATE_DEFAULT =                   true;
+  private static final ConfigDef.Importance TABLE_CREATE_IMPORTANCE =  ConfigDef.Importance.HIGH;
+  private static final String TABLE_CREATE_DOC =
+          "Automatically create BigQuery tables if they don't already exist";
 
   static {
     config = new ConfigDef()
@@ -246,6 +279,18 @@ public class BigQuerySinkConfig extends AbstractConfig {
             TOPICS_TO_TABLES_DEFAULT,
             TOPICS_TO_TABLES_IMPORTANCE,
             TOPICS_TO_TABLES_DOC
+        ).define(
+            RECORDS_TO_TABLE_POSTFIXES_CONFIG,
+            RECORDS_TO_TABLE_POSTFIXES_TYPE,
+            RECORDS_TO_TABLE_POSTFIXES_DEFAULT,
+            RECORDS_TO_TABLE_POSTFIXES_IMPORTANCE,
+            RECORDS_TO_TABLE_POSTFIXES_DOC
+        ).define(
+            SUPPORT_MULTI_SCHEMA_TOPICS_CONFIG,
+            SUPPORT_MULTI_SCHEMA_TOPICS_TYPE,
+            SUPPORT_MULTI_SCHEMA_TOPICS_DEFAULT,
+            SUPPORT_MULTI_SCHEMA_TOPICS_IMPORTANCE,
+            SUPPORT_MULTI_SCHEMA_TOPICS_DOC
         ).define(
             PROJECT_CONFIG,
             PROJECT_TYPE,
@@ -290,11 +335,17 @@ public class BigQuerySinkConfig extends AbstractConfig {
             SANITIZE_FIELD_NAME_IMPORTANCE,
             SANITIZE_FIELD_NAME_DOC
         ).define(
-            INCLUDE_KAFKA_DATA_CONFIG,
-            INCLUDE_KAFKA_DATA_TYPE,
-            INCLUDE_KAFKA_DATA_DEFAULT,
-            INCLUDE_KAFKA_DATA_IMPORTANCE,
-            INSTANCE_KAFKA_DATA_DOC
+            KAFKA_KEY_FIELD_NAME_CONFIG,
+            KAFKA_KEY_FIELD_NAME_TYPE,
+            KAFKA_KEY_FIELD_NAME_DEFAULT,
+            KAFKA_KEY_FIELD_NAME_IMPORTANCE,
+            KAFKA_KEY_FIELD_NAME_DOC
+        ).define(
+            KAFKA_DATA_FIELD_NAME_CONFIG,
+            KAFKA_DATA_FIELD_NAME_TYPE,
+            KAFKA_DATA_FIELD_NAME_DEFAULT,
+            KAFKA_DATA_FIELD_NAME_IMPORTANCE,
+            KAFKA_DATA_FIELD_NAME_DOC
         ).define(
             AVRO_DATA_CACHE_SIZE_CONFIG,
             AVRO_DATA_CACHE_SIZE_TYPE,
@@ -314,7 +365,13 @@ public class BigQuerySinkConfig extends AbstractConfig {
             CONVERT_DOUBLE_SPECIAL_VALUES_DEFAULT,
             CONVERT_DOUBLE_SPECIAL_VALUES_IMPORTANCE,
             CONVERT_DOUBLE_SPECIAL_VALUES_DOC
-         );
+         ).define(
+            TABLE_CREATE_CONFIG,
+            TABLE_CREATE_TYPE,
+            TABLE_CREATE_DEFAULT,
+            TABLE_CREATE_IMPORTANCE,
+            TABLE_CREATE_DOC
+        );
   }
 
   @SuppressWarnings("unchecked")
@@ -422,6 +479,32 @@ public class BigQuerySinkConfig extends AbstractConfig {
     return patternList;
   }
 
+  /**
+   * Given a name of a config property that contains a list of [regex]=[string] mappings and the input value
+   * returns the corresponding mapped value with substituted captured RegEx groups as needed.
+   *
+   * Throws {@link ConfigException} when more than one regex matches the input value.
+   *
+   * @param value The input value used to lookup the mappings.
+   * @param valueProperty The human readable name of the property to be used in error messages.
+   * @param patternProperty The name of the config property containing mappings.
+   * @return the corresponding mapped value with substituted captured RegEx groups as needed.
+   */
+  public String getSingleMatch(String value, String valueProperty, String patternProperty) {
+    List<Map.Entry<Pattern, String>> patterns = getSinglePatterns(patternProperty);
+    Map.Entry<Matcher, String> matcherAndValue = getMatchingPattern(patterns, value, valueProperty, patternProperty);
+    if (matcherAndValue == null) {
+      return null;
+    }
+    try {
+      return matcherAndValue.getKey().replaceAll(matcherAndValue.getValue());
+    } catch (IndexOutOfBoundsException err) {
+      throw new ConfigException("Format string '" + matcherAndValue.getValue()
+          + "' is invalid in property '" + patternProperty
+          + "'", err);
+    }
+  }
+
   private Map<String, String> getSingleMatches(
       List<Map.Entry<Pattern, String>> patterns,
       List<String> values,
@@ -429,24 +512,11 @@ public class BigQuerySinkConfig extends AbstractConfig {
       String patternProperty) {
     Map<String, String> matches = new HashMap<>();
     for (String value : values) {
-      String match = null;
-      for (Map.Entry<Pattern, String> pattern : patterns) {
-        Matcher patternMatcher = pattern.getKey().matcher(value);
-        if (patternMatcher.matches()) {
-          if (match != null) {
-            String secondMatch = pattern.getValue();
-            throw new ConfigException(
-                "Value '" + value
-                + "' for property '" + valueProperty
-                + "' matches " + patternProperty
-                + " regexes for both '" + match
-                + "' and '" + secondMatch + "'"
-            );
-          }
-          match = pattern.getValue();
-        }
+      Map.Entry<Matcher, String> matcherAndValue = getMatchingPattern(patterns, value, valueProperty, patternProperty);
+      if (matcherAndValue != null) {
+        matches.put(value, matcherAndValue.getValue());
       }
-      if (match == null) {
+      if (matcherAndValue == null) {
         throw new ConfigException(
             "Value '" + value
             + "' for property '" + valueProperty
@@ -454,9 +524,30 @@ public class BigQuerySinkConfig extends AbstractConfig {
             + " regexes"
         );
       }
-      matches.put(value, match);
     }
     return matches;
+  }
+
+  private Map.Entry<Matcher, String> getMatchingPattern(List<Map.Entry<Pattern, String>> patterns, String value,
+                                                        String valueProperty, String patternProperty) {
+    Map.Entry<Matcher, String> matchingPattern = null;
+    for (Map.Entry<Pattern, String> pattern : patterns) {
+      Matcher patternMatcher = pattern.getKey().matcher(value);
+      if (patternMatcher.matches()) {
+        if (matchingPattern != null) {
+          String secondMatch = pattern.getValue();
+          throw new ConfigException(
+              "Value '" + value
+                  + "' for property '" + valueProperty
+                  + "' matches " + patternProperty
+                  + " regexes for both '" + matchingPattern.getValue()
+                  + "' and '" + secondMatch + "'"
+          );
+        }
+        matchingPattern = new AbstractMap.SimpleImmutableEntry<>(patternMatcher, pattern.getValue());
+      }
+    }
+    return matchingPattern;
   }
 
   /**
@@ -495,9 +586,7 @@ public class BigQuerySinkConfig extends AbstractConfig {
    * @return a {@link SchemaConverter} for BigQuery.
    */
   public SchemaConverter<Schema> getSchemaConverter() {
-    return getBoolean(INCLUDE_KAFKA_DATA_CONFIG)
-        ? new KafkaDataBQSchemaConverter(getBoolean(ALL_BQ_FIELDS_NULLABLE_CONFIG))
-        : new BigQuerySchemaConverter(getBoolean(ALL_BQ_FIELDS_NULLABLE_CONFIG));
+    return new BigQuerySchemaConverter(getBoolean(ALL_BQ_FIELDS_NULLABLE_CONFIG));
   }
 
   /**
@@ -505,9 +594,7 @@ public class BigQuerySinkConfig extends AbstractConfig {
    * @return a {@link RecordConverter} for BigQuery.
    */
   public RecordConverter<Map<String, Object>> getRecordConverter() {
-    return getBoolean(INCLUDE_KAFKA_DATA_CONFIG)
-        ? new KafkaDataBQRecordConverter(getBoolean(CONVERT_DOUBLE_SPECIAL_VALUES_CONFIG))
-        : new BigQueryRecordConverter(getBoolean(CONVERT_DOUBLE_SPECIAL_VALUES_CONFIG));
+    return new BigQueryRecordConverter(getBoolean(CONVERT_DOUBLE_SPECIAL_VALUES_CONFIG));
   }
 
   /**
@@ -567,6 +654,30 @@ public class BigQuerySinkConfig extends AbstractConfig {
   }
 
   /**
+   *
+   * If the connector is configured to load Kafka data into BigQuery, this config defines
+   * the name of the kafka data field. A structure is created under the field name to contain
+   * kafka data schema including topic, offset, partition and insertTime.
+   *
+   * @return Field name of Kafka Data to be used in BigQuery
+   */
+  public Optional<String> getKafkaKeyFieldName() {
+    return Optional.ofNullable(getString(KAFKA_KEY_FIELD_NAME_CONFIG));
+  }
+
+  /**
+   *
+   * If the connector is configured to load Kafka keys into BigQuery, this config defines
+   * the name of the kafka key field. A structure is created under the field name to contain
+   * a topic's Kafka key schema.
+   *
+   * @return Field name of Kafka Key to be used in BigQuery
+   */
+  public Optional<String> getKafkaDataFieldName() {
+    return Optional.ofNullable(getString(KAFKA_DATA_FIELD_NAME_CONFIG));
+  }
+
+  /**
    * Verifies that a bucket is specified if GCS batch loading is enabled.
    * @throws ConfigException Exception thrown if no bucket is specified and batch loading is on.
    */
@@ -575,6 +686,18 @@ public class BigQuerySinkConfig extends AbstractConfig {
     if (getString(GCS_BUCKET_NAME_CONFIG).equals("")
         && !getList(ENABLE_BATCH_CONFIG).isEmpty()) {
       throw new ConfigException("Batch loading enabled for some topics, but no bucket specified");
+    }
+  }
+
+  private void checkAutoCreateTables() {
+
+    Class<?> schemaRetriever = getClass(BigQuerySinkConfig.SCHEMA_RETRIEVER_CONFIG);
+    boolean autoCreateTables = getBoolean(TABLE_CREATE_CONFIG);
+
+    if (autoCreateTables && schemaRetriever == null) {
+      throw new ConfigException(
+        "Cannot specify automatic table creation without a schema retriever"
+      );
     }
   }
 
@@ -595,5 +718,7 @@ public class BigQuerySinkConfig extends AbstractConfig {
   public BigQuerySinkConfig(Map<String, String> properties) {
     super(config, properties);
     verifyBucketSpecified();
+    checkAutoCreateTables();
   }
+
 }

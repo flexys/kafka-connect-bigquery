@@ -2,8 +2,10 @@ package com.wepay.kafka.connect.bigquery.schemaregistry.schemaretriever;
 
 import com.google.cloud.bigquery.TableId;
 
+import com.wepay.kafka.connect.bigquery.api.KafkaSchemaRecordType;
 import com.wepay.kafka.connect.bigquery.api.SchemaRetriever;
 
+import com.wepay.kafka.connect.bigquery.api.TopicAndRecordName;
 import io.confluent.connect.avro.AvroData;
 
 import io.confluent.kafka.schemaregistry.client.CachedSchemaRegistryClient;
@@ -61,10 +63,11 @@ public class SchemaRegistrySchemaRetriever implements SchemaRetriever {
   }
 
   @Override
-  public Schema retrieveSchema(TableId table, String topic) {
-    String subject = getSubject(topic);
+  public Schema retrieveSchema(TableId table, TopicAndRecordName topicAndRecordName, KafkaSchemaRecordType schemaType) throws ConnectException {
+    String topic = topicAndRecordName.getTopic();
+    String subject = getSubject(topicAndRecordName, schemaType);
+    logger.debug("Retrieving schema information for topic {} with subject {} and schema type {}", topic, subject, schemaType);
     try {
-      logger.debug("Retrieving schema information for topic {} with subject {}", topic, subject);
       SchemaMetadata latestSchemaMetadata = schemaRegistryClient.getLatestSchemaMetadata(subject);
       org.apache.avro.Schema avroSchema = new Parser().parse(latestSchemaMetadata.getSchema());
       return avroData.toConnectSchema(avroSchema);
@@ -78,9 +81,22 @@ public class SchemaRegistrySchemaRetriever implements SchemaRetriever {
   }
 
   @Override
-  public void setLastSeenSchema(TableId table, String topic, Schema schema) { }
-
-  private String getSubject(String topic) {
-    return topic + "-value";
+  public void setLastSeenSchema(TableId table, TopicAndRecordName topicAndRecordName, Schema schema) {
   }
+
+  /**
+   * Convert topic and record name into the schema registry subject.
+   * Subjects follow topic-recordName format.
+   *
+   * If recordName is not present, "value" or "key" will be used, depending on the schema type.
+   *
+   * @param schemaType schema type used to resolve full subject when recordName is absent.
+   * @return corresponding schema registry subject.
+   */
+  private String getSubject(TopicAndRecordName topicAndRecordName, KafkaSchemaRecordType schemaType) {
+    String topic = topicAndRecordName.getTopic();
+    String subjectPostfix = topicAndRecordName.getRecordName().orElseGet(schemaType::toString);
+    return topic + "-" + subjectPostfix;
+  }
+
 }

@@ -25,11 +25,13 @@ import com.google.cloud.storage.Bucket;
 import com.google.cloud.storage.BucketInfo;
 import com.google.cloud.storage.Storage;
 import com.google.common.annotations.VisibleForTesting;
+import com.wepay.kafka.connect.bigquery.api.KafkaSchemaRecordType;
 import com.wepay.kafka.connect.bigquery.api.SchemaRetriever;
+import com.wepay.kafka.connect.bigquery.api.TopicAndRecordName;
 import com.wepay.kafka.connect.bigquery.config.BigQuerySinkConfig;
 import com.wepay.kafka.connect.bigquery.config.BigQuerySinkTaskConfig;
+import com.wepay.kafka.connect.bigquery.convert.KafkaDataBuilder;
 import com.wepay.kafka.connect.bigquery.convert.RecordConverter;
-import com.wepay.kafka.connect.bigquery.convert.SchemaConverter;
 import com.wepay.kafka.connect.bigquery.exception.SinkConfigConnectException;
 import com.wepay.kafka.connect.bigquery.utils.FieldNameSanitizer;
 import com.wepay.kafka.connect.bigquery.utils.PartitionedTableId;
@@ -63,6 +65,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.Optional;
 
 /**
  * A {@link SinkTask} used to translate Kafka Connect {@link SinkRecord SinkRecords} into BigQuery
@@ -76,16 +79,18 @@ public class BigQuerySinkTask extends SinkTask {
   private GCSToBQWriter gcsToBQWriter;
   private BigQuerySinkTaskConfig config;
   private RecordConverter<Map<String, Object>> recordConverter;
-  private Map<String, TableId> topicsToBaseTableIds;
+  private Map<TopicAndRecordName, TableId> topicsToBaseTableIds;
   private boolean useMessageTimeDatePartitioning;
+  private boolean supportMultiSchemaTopics;
 
   private TopicPartitionManager topicPartitionManager;
 
   private KCBQThreadPoolExecutor executor;
   private static final int EXECUTOR_SHUTDOWN_TIMEOUT_SEC = 30;
-  
+
   private final BigQuery testBigQuery;
   private final Storage testGcs;
+  private final SchemaManager testSchemaManager;
 
   private final UUID uuid = UUID.randomUUID();
   private ScheduledExecutorService gcsLoadExecutor;
@@ -97,6 +102,7 @@ public class BigQuerySinkTask extends SinkTask {
     testBigQuery = null;
     schemaRetriever = null;
     testGcs = null;
+    testSchemaManager = null;
   }
 
   /**
@@ -105,12 +111,14 @@ public class BigQuerySinkTask extends SinkTask {
    * @param testBigQuery {@link BigQuery} to use for testing (likely a mock)
    * @param schemaRetriever {@link SchemaRetriever} to use for testing (likely a mock)
    * @param testGcs {@link Storage} to use for testing (likely a mock)
+   * @param testSchemaManager {@link SchemaManager} to use for testing (likely a mock)
    * @see BigQuerySinkTask#BigQuerySinkTask()
    */
-  public BigQuerySinkTask(BigQuery testBigQuery, SchemaRetriever schemaRetriever, Storage testGcs) {
+  public BigQuerySinkTask(BigQuery testBigQuery, SchemaRetriever schemaRetriever, Storage testGcs, SchemaManager testSchemaManager) {
     this.testBigQuery = testBigQuery;
     this.schemaRetriever = schemaRetriever;
     this.testGcs = testGcs;
+    this.testSchemaManager = testSchemaManager;
   }
 
   @Override
@@ -128,11 +136,14 @@ public class BigQuerySinkTask extends SinkTask {
     // Dynamically update topicToBaseTableIds mapping. topicToBaseTableIds was used to be
     // constructed when connector starts hence new topic configuration needed connector to restart.
     // Dynamic update shall not require connector restart and shall compute table id in runtime.
-    if (!topicsToBaseTableIds.containsKey(record.topic())) {
-      TopicToTableResolver.updateTopicToTable(config, record.topic(), topicsToBaseTableIds);
+    TopicAndRecordName topicAndRecordName = TopicAndRecordName.from(record, supportMultiSchemaTopics);
+    if (!topicsToBaseTableIds.containsKey(topicAndRecordName)) {
+      TopicToTableResolver.updateTopicToTable(config, topicAndRecordName, topicsToBaseTableIds);
     }
 
-    TableId baseTableId = topicsToBaseTableIds.get(record.topic());
+    TableId baseTableId = topicsToBaseTableIds.get(topicAndRecordName);
+
+    maybeCreateTable(record, baseTableId);
 
     PartitionedTableId.Builder builder = new PartitionedTableId.Builder(baseTableId);
     if (useMessageTimeDatePartitioning) {
@@ -149,12 +160,33 @@ public class BigQuerySinkTask extends SinkTask {
     return builder.build();
   }
 
+  /**
+   * Create the table which doesn't exist in BigQuery for a (record's) topic when autoCreateTables config is set to true.
+   * @param record Kafka Sink Record to be streamed into BigQuery.
+   * @param baseTableId BaseTableId in BigQuery.
+   */
+  private void maybeCreateTable(SinkRecord record, TableId baseTableId) {
+    BigQuery bigQuery = getBigQuery();
+    boolean autoCreateTables = config.getBoolean(config.TABLE_CREATE_CONFIG);
+    if (autoCreateTables && bigQuery.getTable(baseTableId) == null) {
+      getSchemaManager(bigQuery).createTable(baseTableId, TopicAndRecordName.from(record, supportMultiSchemaTopics));
+      logger.info("Table {} does not exist, auto-created table for topic {}", baseTableId, record.topic());
+    }
+  }
+
   private RowToInsert getRecordRow(SinkRecord record) {
-    Map<String,Object> convertedRecord = recordConverter.convertRecord(record);
+    Map<String, Object> convertedRecord = recordConverter.convertRecord(record, KafkaSchemaRecordType.VALUE);
+    Optional<String> kafkaKeyFieldName = config.getKafkaKeyFieldName();
+    if (kafkaKeyFieldName.isPresent()) {
+      convertedRecord.put(kafkaKeyFieldName.get(), recordConverter.convertRecord(record, KafkaSchemaRecordType.KEY));
+    }
+    Optional<String> kafkaDataFieldName = config.getKafkaDataFieldName();
+    if (kafkaDataFieldName.isPresent()) {
+      convertedRecord.put(kafkaDataFieldName.get(), KafkaDataBuilder.buildKafkaDataRecord(record));
+    }
     if (config.getBoolean(config.SANITIZE_FIELD_NAME_CONFIG)) {
       convertedRecord = FieldNameSanitizer.replaceInvalidKeys(convertedRecord);
     }
-
     return RowToInsert.of(getRowId(record), convertedRecord);
   }
 
@@ -177,7 +209,7 @@ public class BigQuerySinkTask extends SinkTask {
         PartitionedTableId table = getRecordTable(record);
         if (schemaRetriever != null) {
           schemaRetriever.setLastSeenSchema(table.getBaseTableId(),
-                                            record.topic(),
+                                            TopicAndRecordName.from(record, supportMultiSchemaTopics),
                                             record.valueSchema());
         }
 
@@ -197,7 +229,7 @@ public class BigQuerySinkTask extends SinkTask {
                 recordConverter);
           } else {
             tableWriterBuilder =
-                new TableWriter.Builder(bigQueryWriter, table, record.topic(), recordConverter);
+                new TableWriter.Builder(bigQueryWriter, table, TopicAndRecordName.from(record, supportMultiSchemaTopics), recordConverter);
           }
           tableWriterBuilders.put(table, tableWriterBuilder);
         }
@@ -238,10 +270,10 @@ public class BigQuerySinkTask extends SinkTask {
   }
 
   private SchemaManager getSchemaManager(BigQuery bigQuery) {
-    schemaRetriever = config.getSchemaRetriever();
-    SchemaConverter<com.google.cloud.bigquery.Schema> schemaConverter =
-        config.getSchemaConverter();
-    return new SchemaManager(schemaRetriever, schemaConverter, bigQuery);
+    if (testSchemaManager != null) {
+      return testSchemaManager;
+    }
+    return new SchemaManager(bigQuery, config);
   }
 
   private BigQueryWriter getBigQueryWriter() {
@@ -302,6 +334,7 @@ public class BigQuerySinkTask extends SinkTask {
     topicPartitionManager = new TopicPartitionManager();
     useMessageTimeDatePartitioning =
         config.getBoolean(config.BIGQUERY_MESSAGE_TIME_PARTITIONING_CONFIG);
+    supportMultiSchemaTopics = config.getBoolean(config.SUPPORT_MULTI_SCHEMA_TOPICS_CONFIG);
     if (hasGCSBQTask) {
       startGCSToBQLoadTask();
     }

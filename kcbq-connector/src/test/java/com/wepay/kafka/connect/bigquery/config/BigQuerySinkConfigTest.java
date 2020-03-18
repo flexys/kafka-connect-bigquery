@@ -24,8 +24,8 @@ import static org.junit.Assert.fail;
 
 import com.wepay.kafka.connect.bigquery.SinkPropertiesFactory;
 
-import com.wepay.kafka.connect.bigquery.convert.kafkadata.KafkaDataBQRecordConverter;
-import com.wepay.kafka.connect.bigquery.convert.kafkadata.KafkaDataBQSchemaConverter;
+import com.wepay.kafka.connect.bigquery.convert.BigQueryRecordConverter;
+import com.wepay.kafka.connect.bigquery.convert.BigQuerySchemaConverter;
 import org.apache.kafka.common.config.ConfigException;
 
 import org.junit.Before;
@@ -75,24 +75,39 @@ public class BigQuerySinkConfigTest {
     assertEquals(expectedTopicsToDatasets, testTopicsToDatasets);
   }
 
+  @Test()
+  public void testGetSingleMatch() {
+    Map<String, String> configProperties = propertiesFactory.getProperties();
+
+    String configKey = BigQuerySinkConfig.RECORDS_TO_TABLE_POSTFIXES_CONFIG;
+    String configValue = "recordA=A,recordB=B,entity(.*)=$1,(.*)World=$1";
+    configProperties.put(configKey, configValue);
+    BigQuerySinkConfig config = new BigQuerySinkConfig(configProperties);
+    assertEquals("A", config.getSingleMatch("recordA", "test value", configKey));
+    assertEquals("B", config.getSingleMatch("recordB", "test value", configKey));
+    assertEquals("C", config.getSingleMatch("entityC", "test value", configKey));
+    assertEquals("Hello", config.getSingleMatch("entityHello", "test value", configKey));
+    assertEquals("Hello", config.getSingleMatch("HelloWorld", "test value", configKey));
+  }
+
   @Test
   public void testGetSchemaConverter() {
     Map<String, String> configProperties = propertiesFactory.getProperties();
-    configProperties.put(BigQuerySinkConfig.INCLUDE_KAFKA_DATA_CONFIG, "true");
+    configProperties.put(BigQuerySinkConfig.KAFKA_DATA_FIELD_NAME_CONFIG, "kafkaData");
 
     BigQuerySinkConfig testConfig = new BigQuerySinkConfig(configProperties);
 
-    assertTrue(testConfig.getSchemaConverter() instanceof KafkaDataBQSchemaConverter);
+    assertTrue(testConfig.getSchemaConverter() instanceof BigQuerySchemaConverter);
   }
 
   @Test
   public void testGetRecordConverter() {
     Map<String, String> configProperties = propertiesFactory.getProperties();
-    configProperties.put(BigQuerySinkConfig.INCLUDE_KAFKA_DATA_CONFIG, "true");
+    configProperties.put(BigQuerySinkConfig.KAFKA_DATA_FIELD_NAME_CONFIG, "kafkaData");
 
     BigQuerySinkConfig testConfig = new BigQuerySinkConfig(configProperties);
 
-    assertTrue(testConfig.getRecordConverter() instanceof KafkaDataBQRecordConverter);
+    assertTrue(testConfig.getRecordConverter() instanceof BigQueryRecordConverter);
   }
 
   @Test(expected = ConfigException.class)
@@ -146,6 +161,17 @@ public class BigQuerySinkConfigTest {
         "tracking-everything-in-the-database"
     );
     new BigQuerySinkConfig(badConfigProperties).getTopicsToDatasets();
+  }
+
+  @Test(expected = ConfigException.class)
+  public void testFailedGetSingleMatch() {
+    Map<String, String> configProperties = propertiesFactory.getProperties();
+
+    String configKey = BigQuerySinkConfig.RECORDS_TO_TABLE_POSTFIXES_CONFIG;
+    String configValue = "Hello(.*)=$1,(.*)World=$1";
+    configProperties.put(configKey, configValue);
+    BigQuerySinkConfig config = new BigQuerySinkConfig(configProperties);
+    config.getSingleMatch("HelloWorld", "test value", configKey);
   }
 
   @Test(expected = ConfigException.class)
