@@ -1,4 +1,4 @@
-# Kafka Connect BigQuery Connector
+# Kafka Connect BigQuery Connector - Flexys fork
 
 [![Build Status](https://img.shields.io/travis/wepay/kafka-connect-bigquery.svg?style=flat-square)](https://travis-ci.org/wepay/kafka-connect-bigquery)
 [![Code Coverage](https://img.shields.io/codecov/c/github/wepay/kafka-connect-bigquery.svg?style=flat-square)](https://codecov.io/gh/wepay/kafka-connect-bigquery)
