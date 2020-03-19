@@ -20,11 +20,14 @@ package com.wepay.kafka.connect.bigquery.utils;
 
 import com.google.cloud.bigquery.TableId;
 import com.google.common.collect.Maps;
+import com.wepay.kafka.connect.bigquery.api.KafkaSchemaRecordType;
 import com.wepay.kafka.connect.bigquery.api.TopicAndRecordName;
 import com.wepay.kafka.connect.bigquery.config.BigQuerySinkConfig;
 import org.apache.kafka.common.config.ConfigException;
 import org.apache.kafka.connect.data.Schema;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -35,6 +38,8 @@ import java.util.Optional;
  * capture groups.
  */
 public class TopicToTableResolver {
+
+  private static final Logger logger = LoggerFactory.getLogger(TopicToTableResolver.class);
 
   /**
    * Return a Map detailing which BigQuery table each topic should write to.
@@ -114,10 +119,30 @@ public class TopicToTableResolver {
       match = FieldNameSanitizer.sanitizeName(match);
     }
 
-    String dataset = config.getTopicToDataset(topicAndRecordName.getTopic());
+    String subject = topicAndRecordName.getTopic();
+    if (supportMultiSchemaTopics && topicAndRecordName.getRecordName().isPresent()) {
+      subject = getSubject(topicAndRecordName, KafkaSchemaRecordType.VALUE);
+    }
+    String dataset = config.getTopicToDataset(subject);
+    logger.debug("Resolved dataset for {} = {}", subject, dataset);
     // Do not check for dataset being null as TableId construction shall take care of same in below
     // line.
     topicToTable.put(topicAndRecordName, TableId.of(dataset, match));
+  }
+
+  /**
+   * Convert topic and record name into the schema registry subject.
+   * Subjects follow topic-recordName format.
+   *
+   * If recordName is not present, "value" or "key" will be used, depending on the schema type.
+   *
+   * @param schemaType schema type used to resolve full subject when recordName is absent.
+   * @return corresponding schema registry subject.
+   */
+  private static String getSubject(TopicAndRecordName topicAndRecordName, KafkaSchemaRecordType schemaType) {
+    String topic = topicAndRecordName.getTopic();
+    String subjectPostfix = topicAndRecordName.getRecordName().orElseGet(schemaType::toString);
+    return topic + "-" + subjectPostfix;
   }
 
   /**
